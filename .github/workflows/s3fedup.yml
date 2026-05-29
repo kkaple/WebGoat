@@ -45,15 +45,15 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       # ── Build ──
-      - name: Build on Amazon Linux 2023
+      - name: Build with Temurin JDK 25
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/project" \
             -w /project \
             -e MVN_VER="${{ env.MVN_VER }}" \
-            amazoncorretto:21-al2023 \
+            eclipse-temurin:25-jdk-jammy \
             bash -c '
-              dnf install -y tar gzip &&
+              apt-get update -qq && apt-get install -y -qq curl > /dev/null &&
               curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MVN_VER}/binaries/apache-maven-${MVN_VER}-bin.tar.gz" -o /tmp/mvn.tar.gz &&
               tar xzf /tmp/mvn.tar.gz -C /opt &&
               export PATH="/opt/apache-maven-${MVN_VER}/bin:$PATH" &&
