@@ -77,6 +77,9 @@ jobs:
             -   name: Checkout
                 uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
+            -   name: Set timestamp
+                run: echo "TS=$(date -u +'%Y%m%d-%H%M%S')" >> "$GITHUB_ENV"
+
             -   name: Build with Temurin JDK 25
                 run: |
                     docker run --rm \
@@ -125,20 +128,20 @@ jobs:
 
             -   name: Upload Phase 1 artifacts to S3
                 run: |
-                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ github.sha }}/${{ github.run_id }}"
+                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ env.TS }}_${{ github.sha }}/${{ github.run_id }}"
                     echo "[INFO] Uploading Phase 1 artifacts to ${S3_PATH}/phase1/"
                     aws s3 cp spdx-output/ "${S3_PATH}/phase1/" --recursive
 
             -   name: Upload build output to S3
                 if: ${{ github.event_name == 'push' || inputs.upload_build_output }}
                 run: |
-                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ github.sha }}/${{ github.run_id }}"
+                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ env.TS }}_${{ github.sha }}/${{ github.run_id }}"
                     echo "[INFO] Uploading build output to ${S3_PATH}/build/"
                     aws s3 cp target/ "${S3_PATH}/build/" --recursive
 
             -   name: Verify S3 upload
                 run: |
-                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ github.sha }}/${{ github.run_id }}"
+                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ env.TS }}_${{ github.sha }}/${{ github.run_id }}"
                     echo "=== S3 contents ==="
                     aws s3 ls "${S3_PATH}/" --recursive
                     echo ""
