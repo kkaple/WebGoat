@@ -1,0 +1,117 @@
+# S3 Federated Upload — Build + Phase 1 → S3
+#
+# Runs on push to main (after PR merge) and manual dispatch.
+# Builds the project, runs Phase 1 sidecar (build interception),
+# then uploads Phase 1 artifacts + build output to S3.
+# A separate Phase 2 consumer pulls from S3 to generate SPDX.
+
+name: S3 Federated Upload
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "*.md"
+      - "*.txt"
+      - "LICENSE"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      upload_build_output:
+        description: "Include JARs and class files in S3 upload"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write   # OIDC for AWS
+  contents: read
+  packages: read
+
+env:
+  SIDECAR_IMAGE: ghcr.io/kkaple/omnibor-sidecar:dev
+  MVN_VER: "3.9.8"
+  S3_BUCKET: omnibor-spdx-artifacts
+  S3_PREFIX: java/WebGoat
+
+jobs:
+  build-phase1-s3:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      # ── Build ──
+      - name: Build on Amazon Linux 2023
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/project" \
+            -w /project \
+            -e MVN_VER="${{ env.MVN_VER }}" \
+            amazoncorretto:21-al2023 \
+            bash -c '
+              dnf install -y tar gzip &&
+              curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MVN_VER}/binaries/apache-maven-${MVN_VER}-bin.tar.gz" -o /tmp/mvn.tar.gz &&
+              tar xzf /tmp/mvn.tar.gz -C /opt &&
+              export PATH="/opt/apache-maven-${MVN_VER}/bin:$PATH" &&
+              mvn --version &&
+              mvn package -DskipTests -q
+            '
+
+      # ── Phase 1: Build interception ──
+      - name: Login to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull sidecar image
+        run: docker pull "$SIDECAR_IMAGE"
+
+      - name: "Phase 1: Build interception via sidecar"
+        run: |
+          mkdir -p "${{ github.workspace }}/spdx-output"
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace/repos/WebGoat" \
+            -v "${{ github.workspace }}/spdx-output:/workspace/output" \
+            -e OMNIBOR_MODE=sidecar \
+            "$SIDECAR_IMAGE" \
+            python3 /workspace/app/analyze.py \
+              --repo WebGoat \
+              --mode sidecar \
+              --phase build \
+              --skip-clone
+
+      # ── Upload to S3 ──
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4
+        with:
+          role-to-assume: arn:aws:iam::930218373905:role/github-actions-s3
+          aws-region: us-east-1
+
+      - name: Upload Phase 1 artifacts to S3
+        run: |
+          S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ github.sha }}/${{ github.run_id }}"
+          echo "[INFO] Uploading Phase 1 artifacts to ${S3_PATH}/phase1/"
+          aws s3 cp spdx-output/ "${S3_PATH}/phase1/" --recursive
+
+      - name: Upload build output to S3
+        if: ${{ github.event_name == 'push' || inputs.upload_build_output }}
+        run: |
+          S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ github.sha }}/${{ github.run_id }}"
+          echo "[INFO] Uploading build output to ${S3_PATH}/build/"
+          aws s3 cp target/ "${S3_PATH}/build/" --recursive
+
+      - name: Verify S3 upload
+        run: |
+          S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ github.sha }}/${{ github.run_id }}"
+          echo "=== S3 contents ==="
+          aws s3 ls "${S3_PATH}/" --recursive
+          echo ""
+          echo "=== Phase 2 can pull from ==="
+          echo "  Phase 1: ${S3_PATH}/phase1/"
+          echo "  Build:   ${S3_PATH}/build/"
