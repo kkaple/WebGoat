@@ -29,7 +29,7 @@ env:
     SIDECAR_IMAGE: ghcr.io/kkaple/omnibor-sidecar:dev
     MVN_VER: "3.9.8"
     S3_BUCKET: omnibor-spdx-artifacts
-    S3_PREFIX: java/WebGoat
+    S3_REPO: ${{ github.repository }}
 
 jobs:
     pre-commit:
@@ -128,23 +128,25 @@ jobs:
 
             -   name: Upload Phase 1 artifacts to S3
                 run: |
-                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ env.TS }}_${{ github.sha }}/${{ github.run_id }}"
+                    SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-12)
+                    JOB_ID="${{ env.TS }}_${SHORT_SHA}_${{ github.run_id }}"
+                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_REPO }}/${JOB_ID}"
+                    echo "JOB_ID=${JOB_ID}" >> "$GITHUB_ENV"
+                    echo "S3_PATH=${S3_PATH}" >> "$GITHUB_ENV"
                     echo "[INFO] Uploading Phase 1 artifacts to ${S3_PATH}/phase1/"
                     aws s3 cp spdx-output/ "${S3_PATH}/phase1/" --recursive
 
             -   name: Upload build output to S3
                 if: ${{ github.event_name == 'push' || inputs.upload_build_output }}
                 run: |
-                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ env.TS }}_${{ github.sha }}/${{ github.run_id }}"
-                    echo "[INFO] Uploading build output to ${S3_PATH}/build/"
-                    aws s3 cp target/ "${S3_PATH}/build/" --recursive
+                    echo "[INFO] Uploading build output to ${{ env.S3_PATH }}/build/"
+                    aws s3 cp target/ "${{ env.S3_PATH }}/build/" --recursive
 
             -   name: Verify S3 upload
                 run: |
-                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ env.TS }}_${{ github.sha }}/${{ github.run_id }}"
                     echo "=== S3 contents ==="
-                    aws s3 ls "${S3_PATH}/" --recursive
+                    aws s3 ls "${{ env.S3_PATH }}/" --recursive
                     echo ""
                     echo "=== Phase 2 can pull from ==="
-                    echo "  Phase 1: ${S3_PATH}/phase1/"
-                    echo "  Build:   ${S3_PATH}/build/"
+                    echo "  Phase 1: ${{ env.S3_PATH }}/phase1/"
+                    echo "  Build:   ${{ env.S3_PATH }}/build/"
