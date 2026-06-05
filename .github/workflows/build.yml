@@ -14,7 +14,7 @@ on:
             upload_build_output:
                 description: "Include JARs and class files in S3 upload"
                 type: boolean
-                default: false
+                default: true
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
@@ -106,7 +106,7 @@ jobs:
             -   name: Pull sidecar image
                 run: docker pull "$SIDECAR_IMAGE"
 
-            -   name: "Phase 1: Build interception via sidecar"
+            -   name: "Phase 1: Build result processing via sidecar"
                 run: |
                     mkdir -p "${{ github.workspace }}/spdx-output"
                     docker run --rm \
