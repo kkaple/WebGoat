@@ -14,7 +14,7 @@ on:
             upload_build_output:
                 description: "Include JARs and class files in S3 upload"
                 type: boolean
-                default: true
+                default: false
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
