@@ -21,15 +21,14 @@ concurrency:
     cancel-in-progress: true
 
 permissions:
-    id-token: write   # OIDC for AWS
+    id-token: write   # OIDC token for operator presigned URL broker
     contents: read
     packages: read
 
 env:
     SIDECAR_IMAGE: ghcr.io/kkaple/omnibor-sidecar:dev
     MVN_VER: "3.9.8"
-    S3_BUCKET: omnibor-spdx-artifacts
-    S3_REPO: ${{ github.repository }}
+    OPERATOR_URL: https://d1nzmqdbw8u7lo.cloudfront.net
 
 jobs:
     pre-commit:
@@ -120,33 +119,41 @@ jobs:
                         --phase build \
                         --skip-clone
 
-            -   name: Configure AWS credentials (OIDC)
-                uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502  # v4
-                with:
-                    role-to-assume: arn:aws:iam::930218373905:role/github-actions-s3
-                    aws-region: us-east-1
+            -   name: Get OIDC token
+                id: oidc
+                run: |
+                    OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=omnibor-operator" | jq -r '.value')
+                    echo "::add-mask::${OIDC_TOKEN}"
+                    echo "OIDC_TOKEN=${OIDC_TOKEN}" >> "$GITHUB_ENV"
 
-            -   name: Upload Phase 1 artifacts to S3
+            -   name: Bundle Phase 1 artifacts
                 run: |
                     SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-12)
                     JOB_ID="${{ env.TS }}_${SHORT_SHA}_${{ github.run_id }}"
-                    S3_PATH="s3://${{ env.S3_BUCKET }}/${{ env.S3_REPO }}/${JOB_ID}"
                     echo "JOB_ID=${JOB_ID}" >> "$GITHUB_ENV"
-                    echo "S3_PATH=${S3_PATH}" >> "$GITHUB_ENV"
-                    echo "[INFO] Uploading Phase 1 artifacts to ${S3_PATH}/phase1/"
-                    aws s3 cp spdx-output/ "${S3_PATH}/phase1/" --recursive
+                    tar czf /tmp/phase1.tar.gz -C spdx-output .
+                    echo "[INFO] Phase 1 bundle: $(du -h /tmp/phase1.tar.gz | cut -f1)"
 
-            -   name: Upload build output to S3
+            -   name: Upload Phase 1 bundle via presigned URL
+                run: |
+                    RESPONSE=$(curl -sS -f -X POST "${{ env.OPERATOR_URL }}/v1/upload-url" \
+                      -H "Authorization: Bearer ${OIDC_TOKEN}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"repository\":\"${{ github.repository }}\",\"job_id\":\"${{ env.JOB_ID }}\",\"files\":[\"phase1.tar.gz\"]}")
+                    URL=$(echo "$RESPONSE" | jq -r '.urls["phase1.tar.gz"]')
+                    curl -sS -f -X PUT -T /tmp/phase1.tar.gz "$URL"
+                    echo "[INFO] Phase 1 upload complete"
+
+            -   name: Upload build output via presigned URL
                 if: ${{ github.event_name == 'push' || inputs.upload_build_output }}
                 run: |
-                    echo "[INFO] Uploading build output to ${{ env.S3_PATH }}/build/"
-                    aws s3 cp target/ "${{ env.S3_PATH }}/build/" --recursive
-
-            -   name: Verify S3 upload
-                run: |
-                    echo "=== S3 contents ==="
-                    aws s3 ls "${{ env.S3_PATH }}/" --recursive
-                    echo ""
-                    echo "=== Phase 2 can pull from ==="
-                    echo "  Phase 1: ${{ env.S3_PATH }}/phase1/"
-                    echo "  Build:   ${{ env.S3_PATH }}/build/"
+                    tar czf /tmp/build.tar.gz -C target .
+                    echo "[INFO] Build bundle: $(du -h /tmp/build.tar.gz | cut -f1)"
+                    RESPONSE=$(curl -sS -f -X POST "${{ env.OPERATOR_URL }}/v1/upload-url" \
+                      -H "Authorization: Bearer ${OIDC_TOKEN}" \
+                      -H "Content-Type: application/json" \
+                      -d "{\"repository\":\"${{ github.repository }}\",\"job_id\":\"${{ env.JOB_ID }}\",\"files\":[\"build.tar.gz\"]}")
+                    URL=$(echo "$RESPONSE" | jq -r '.urls["build.tar.gz"]')
+                    curl -sS -f -X PUT -T /tmp/build.tar.gz "$URL"
+                    echo "[INFO] Build output upload complete"
