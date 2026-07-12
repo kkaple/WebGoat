@@ -29,6 +29,8 @@ env:
     SIDECAR_IMAGE: ghcr.io/kkaple/omnibor-sidecar:dev
     MVN_VER: "3.9.8"
     OPERATOR_URL: https://d1nzmqdbw8u7lo.cloudfront.net
+    OIDC_AUDIENCE: on-prem
+    TENANT_ID: '["cd71c989-264a-4f1c-9aae-64bf036fccfc","75fc2214-adb9-4bfc-b7f6-b771b4f2bb8b"]'
 
 jobs:
     pre-commit:
@@ -123,24 +125,64 @@ jobs:
                 id: oidc
                 run: |
                     OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-                      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=omnibor-operator" | jq -r '.value')
+                      "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${{ env.OIDC_AUDIENCE }}" | jq -r '.value')
                     echo "::add-mask::${OIDC_TOKEN}"
                     echo "OIDC_TOKEN=${OIDC_TOKEN}" >> "$GITHUB_ENV"
 
-            -   name: Bundle Phase 1 artifacts
+            -   name: Build ssvs_meta.json
                 run: |
                     SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-12)
                     JOB_ID="${{ env.TS }}_${SHORT_SHA}_${{ github.run_id }}"
                     echo "JOB_ID=${JOB_ID}" >> "$GITHUB_ENV"
+                    # Resolve git tag if HEAD is tagged
+                    GIT_TAG=$(git tag --points-at HEAD 2>/dev/null | head -n 1)
+                    jq -n \
+                      --argjson tenant_id '${{ env.TENANT_ID }}' \
+                      --arg repository '${{ github.repository }}' \
+                      --arg ref '${{ github.ref }}' \
+                      --arg sha '${{ github.sha }}' \
+                      --arg tag "${GIT_TAG}" \
+                      --arg run_id '${{ github.run_id }}' \
+                      --arg run_number '${{ github.run_number }}' \
+                      --arg actor '${{ github.actor }}' \
+                      --arg event_name '${{ github.event_name }}' \
+                      --arg job_id "${JOB_ID}" \
+                      --arg sidecar_image '${{ env.SIDECAR_IMAGE }}' \
+                      --arg oidc_audience '${{ env.OIDC_AUDIENCE }}' \
+                      '{
+                        tenant_id: $tenant_id,
+                        repository: $repository,
+                        ref: $ref,
+                        sha: $sha,
+                        tag: (if $tag == "" then null else $tag end),
+                        run_id: $run_id,
+                        run_number: $run_number,
+                        actor: $actor,
+                        event_name: $event_name,
+                        job_id: $job_id,
+                        sidecar_image: $sidecar_image,
+                        oidc_audience: $oidc_audience
+                      }' > spdx-output/ssvs_meta.json
+                    echo "[INFO] ssvs_meta.json:"
+                    cat spdx-output/ssvs_meta.json
+
+            -   name: Bundle Phase 1 artifacts
+                run: |
                     tar czf /tmp/phase1.tar.gz -C spdx-output .
                     echo "[INFO] Phase 1 bundle: $(du -h /tmp/phase1.tar.gz | cut -f1)"
 
             -   name: Upload Phase 1 bundle via presigned URL
                 run: |
+                    META=$(cat spdx-output/ssvs_meta.json)
+                    BODY=$(jq -n \
+                      --arg repository '${{ github.repository }}' \
+                      --arg job_id '${{ env.JOB_ID }}' \
+                      --argjson metadata "$META" \
+                      '{repository: $repository, job_id: $job_id, files: ["phase1.tar.gz"], metadata: $metadata}')
                     RESPONSE=$(curl -sS -f -X POST "${{ env.OPERATOR_URL }}/v1/upload-url" \
                       -H "Authorization: Bearer ${OIDC_TOKEN}" \
                       -H "Content-Type: application/json" \
-                      -d "{\"repository\":\"${{ github.repository }}\",\"job_id\":\"${{ env.JOB_ID }}\",\"files\":[\"phase1.tar.gz\"]}")
+                      -d "$BODY")
                     URL=$(echo "$RESPONSE" | jq -r '.urls["phase1.tar.gz"]')
                     curl -sS -f -X PUT -T /tmp/phase1.tar.gz "$URL"
                     echo "[INFO] Phase 1 upload complete"
